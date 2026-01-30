@@ -2,9 +2,11 @@ package telemetry
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/ymtdzzz/otel-tui/tuiexporter/internal/test"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -764,4 +766,89 @@ func TestLogDataGetResolvedBody(t *testing.T) {
 	want := `test log. userId=user-12345, quantity=2000, tags=["tag_A","tag_B"]`
 
 	assert.Equal(t, want, ld.GetResolvedBody())
+}
+
+// assertNoDeadlock runs an operation in a goroutine and verifies it completes
+// without deadlocking, and that the callback was invoked.
+func assertNoDeadlock(t *testing.T, operation func(), operationName string, callbackCompleted <-chan struct{}) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		operation()
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 10*time.Millisecond, "%s deadlocked; callback could not acquire mutex", operationName)
+
+	require.Eventually(t, func() bool {
+		select {
+		case <-callbackCompleted:
+			return true
+		default:
+			return false
+		}
+	}, 100*time.Millisecond, 10*time.Millisecond, "callback was not invoked")
+}
+
+func TestFlushCallbackDoesNotDeadlock(t *testing.T) {
+	store := NewStore(clockwork.NewRealClock())
+
+	payload, _ := test.GenerateOTLPTracesPayload(t, 1, 1, []int{1}, [][]int{{1}})
+	store.AddSpan(&payload)
+
+	callbackCompleted := make(chan struct{})
+	store.RegisterOnFlushed(func() {
+		payload2, _ := test.GenerateOTLPTracesPayload(t, 2, 1, []int{1}, [][]int{{1}})
+		store.AddSpan(&payload2)
+		close(callbackCompleted)
+	})
+
+	assertNoDeadlock(t, func() { store.Flush() }, "Flush()", callbackCompleted)
+}
+
+func TestAddSpanCallbackDoesNotDeadlock(t *testing.T) {
+	store := NewStore(clockwork.NewRealClock())
+
+	callbackCompleted := make(chan struct{})
+	store.SetOnSpanAdded(func() {
+		store.Flush()
+		close(callbackCompleted)
+	})
+
+	payload, _ := test.GenerateOTLPTracesPayload(t, 1, 1, []int{1}, [][]int{{1}})
+	assertNoDeadlock(t, func() { store.AddSpan(&payload) }, "AddSpan()", callbackCompleted)
+}
+
+func TestAddMetricCallbackDoesNotDeadlock(t *testing.T) {
+	store := NewStore(clockwork.NewRealClock())
+
+	callbackCompleted := make(chan struct{})
+	store.SetOnMetricAdded(func() {
+		store.Flush()
+		close(callbackCompleted)
+	})
+
+	payload, _ := test.GenerateOTLPGaugeMetricsPayload(t, 1, []int{1}, [][]int{{1}})
+	assertNoDeadlock(t, func() { store.AddMetric(&payload) }, "AddMetric()", callbackCompleted)
+}
+
+func TestAddLogCallbackDoesNotDeadlock(t *testing.T) {
+	store := NewStore(clockwork.NewRealClock())
+
+	callbackCompleted := make(chan struct{})
+	store.SetOnLogAdded(func() {
+		store.Flush()
+		close(callbackCompleted)
+	})
+
+	payload, _ := test.GenerateOTLPLogsPayload(t, 1, 1, []int{1}, [][]int{{1}})
+	assertNoDeadlock(t, func() { store.AddLog(&payload) }, "AddLog()", callbackCompleted)
 }

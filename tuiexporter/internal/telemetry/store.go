@@ -411,10 +411,14 @@ func (s *Store) GetFilteredLogByIdx(idx int) *LogData {
 
 // AddSpan adds spans to the store
 func (s *Store) AddSpan(traces *ptrace.Traces) {
+	var callback func()
 	s.mut.Lock()
 	defer func() {
 		s.updatedAt = s.clockwork.Now()
 		s.mut.Unlock()
+		if callback != nil {
+			callback()
+		}
 	}()
 
 	for rsi := 0; rsi < traces.ResourceSpans().Len(); rsi++ {
@@ -454,17 +458,19 @@ func (s *Store) AddSpan(traces *ptrace.Traces) {
 
 	s.updateFilterService()
 
-	if s.onSpanAdded != nil {
-		s.onSpanAdded()
-	}
+	callback = s.onSpanAdded
 }
 
 // AddMetric adds metrics to the store
 func (s *Store) AddMetric(metrics *pmetric.Metrics) {
+	var callback func()
 	s.mut.Lock()
 	defer func() {
 		s.updatedAt = s.clockwork.Now()
 		s.mut.Unlock()
+		if callback != nil {
+			callback()
+		}
 	}()
 
 	for rmi := 0; rmi < metrics.ResourceMetrics().Len(); rmi++ {
@@ -498,17 +504,19 @@ func (s *Store) AddMetric(metrics *pmetric.Metrics) {
 
 	s.updateFilterMetrics()
 
-	if s.onMetricAdded != nil {
-		s.onMetricAdded()
-	}
+	callback = s.onMetricAdded
 }
 
 // AddLog adds logs to the store
 func (s *Store) AddLog(logs *plog.Logs) {
+	var callback func()
 	s.mut.Lock()
 	defer func() {
 		s.updatedAt = s.clockwork.Now()
 		s.mut.Unlock()
+		if callback != nil {
+			callback()
+		}
 	}()
 
 	for rli := 0; rli < logs.ResourceLogs().Len(); rli++ {
@@ -541,17 +549,19 @@ func (s *Store) AddLog(logs *plog.Logs) {
 
 	s.updateFilterLogs()
 
-	if s.onLogAdded != nil {
-		s.onLogAdded()
-	}
+	callback = s.onLogAdded
 }
 
 // Flush clears the store including the cache
 func (s *Store) Flush() {
+	var callbacks []func()
 	s.mut.Lock()
 	defer func() {
 		s.updatedAt = s.clockwork.Now()
 		s.mut.Unlock()
+		for _, f := range callbacks {
+			f()
+		}
 	}()
 
 	s.svcspans = SvcSpans{}
@@ -565,7 +575,6 @@ func (s *Store) Flush() {
 	s.logcache.flush()
 	s.updatedAt = s.clockwork.Now()
 
-	for _, f := range s.onFlushed {
-		f()
-	}
+	callbacks = make([]func(), len(s.onFlushed))
+	copy(callbacks, s.onFlushed)
 }

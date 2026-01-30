@@ -24,6 +24,7 @@ type TUIApp struct {
 	store           *telemetry.Store
 	refreshedAt     time.Time
 	logFile         *os.File
+	stopCh          chan struct{}
 }
 
 // NewTUIApp creates a new TUI application.
@@ -58,6 +59,7 @@ func NewTUIApp(store *telemetry.Store, initialInterval time.Duration, debugLogFi
 		pages:           tpages,
 		store:           store,
 		logFile:         logFile,
+		stopCh:          make(chan struct{}),
 	}
 
 	app.SetRoot(pages, true)
@@ -101,6 +103,7 @@ func (t *TUIApp) Run() error {
 
 // Stop stops the TUI application.
 func (t *TUIApp) Stop() error {
+	close(t.stopCh) // Signal refresh goroutine to exit.
 	t.app.Stop()
 	if t.logFile != nil {
 		if err := t.logFile.Close(); err != nil {
@@ -112,11 +115,16 @@ func (t *TUIApp) Stop() error {
 
 func (t *TUIApp) refresh() {
 	tick := time.NewTicker(refreshInterval)
+	defer tick.Stop()
 	for {
-		<-tick.C
-		if t.refreshedAt.Before(t.store.UpdatedAt()) {
-			t.app.Draw()
-			t.refreshedAt = time.Now()
+		select {
+		case <-t.stopCh:
+			return
+		case <-tick.C:
+			if t.refreshedAt.Before(t.store.UpdatedAt()) {
+				t.app.Draw()
+				t.refreshedAt = time.Now()
+			}
 		}
 	}
 }
